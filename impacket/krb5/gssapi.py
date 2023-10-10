@@ -68,6 +68,10 @@ def GSSAPI(cipher):
         return GSSAPI_AES256()
     if cipher.enctype == constants.EncryptionTypes.aes128_cts_hmac_sha1_96.value:
         return GSSAPI_AES128()
+    if cipher.enctype == constants.EncryptionTypes.aes256_cts_hmac_sha384_192.value:
+        return GSSAPI_AES256()
+    if cipher.enctype == constants.EncryptionTypes.aes128_cts_hmac_sha256_128.value:
+        return GSSAPI_AES128()
     elif cipher.enctype == constants.EncryptionTypes.rc4_hmac.value:
         return GSSAPI_RC4()
     else:
