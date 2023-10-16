@@ -34,7 +34,7 @@ from impacket.krb5.types import KerberosTime, Principal, Ticket
 from impacket.krb5.gssapi import CheckSumField, GSS_C_DCE_STYLE, GSS_C_MUTUAL_FLAG, GSS_C_REPLAY_FLAG, \
     GSS_C_SEQUENCE_FLAG, GSS_C_CONF_FLAG, GSS_C_INTEG_FLAG
 from impacket.krb5 import constants
-from impacket.krb5.crypto import Key, _enctype_table, InvalidChecksum
+from impacket.krb5.crypto import Key, _enctype_table, InvalidChecksum, _SHA384AES256
 from impacket.smbconnection import SessionError
 from impacket.spnego import SPNEGO_NegTokenInit, TypesMech, SPNEGO_NegTokenResp, ASN1_OID, asn1encode, ASN1_AID
 from impacket.krb5.gssapi import KRB5_AP_REQ
@@ -652,10 +652,10 @@ def getKerberosType1(username, password, domain, lmhash, nthash, aesKey='', TGT 
 
 
     authenticator['cksum'] = noValue
-    authenticator['cksum']['cksumtype'] = 0x8003
+    authenticator['cksum']['cksumtype'] = constants.ChecksumTypes.hmac_sha384_192_aes256
 
     chkField = CheckSumField()
-    chkField['Lgth'] = 16
+    chkField['Lgth'] = _SHA384AES256.macsize
 
     chkField['Flags'] = GSS_C_CONF_FLAG | GSS_C_INTEG_FLAG | GSS_C_SEQUENCE_FLAG | GSS_C_REPLAY_FLAG | GSS_C_MUTUAL_FLAG | GSS_C_DCE_STYLE
     #chkField['Flags'] = GSS_C_INTEG_FLAG | GSS_C_SEQUENCE_FLAG | GSS_C_REPLAY_FLAG | GSS_C_MUTUAL_FLAG | GSS_C_DCE_STYLE

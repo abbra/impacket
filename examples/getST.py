@@ -57,7 +57,7 @@ from impacket.krb5 import constants
 from impacket.krb5.asn1 import AP_REQ, AS_REP, TGS_REQ, Authenticator, TGS_REP, seq_set, seq_set_iter, PA_FOR_USER_ENC, \
     Ticket as TicketAsn1, EncTGSRepPart, PA_PAC_OPTIONS, EncTicketPart
 from impacket.krb5.ccache import CCache
-from impacket.krb5.crypto import Key, _enctype_table, _HMACMD5, _AES256CTS, Enctype
+from impacket.krb5.crypto import Key, _enctype_table, _SHA384AES256, _AES256_SHA384_CTS, Enctype
 from impacket.krb5.constants import TicketFlags, encodeFlags
 from impacket.krb5.kerberosv5 import getKerberosTGS, getKerberosTGT, sendReceive
 from impacket.krb5.types import Principal, KerberosTime, Ticket
@@ -128,7 +128,7 @@ class GETST:
                             print(hexlify(nthash).decode())
                     if not aesKey:
                         salt = self.__domain.upper() + self.__user
-                        aesKey = _AES256CTS.string_to_key(self.__password, salt, params=None).contents
+                        aesKey = _AES256_SHA384_CTS.string_to_key(self.__password, salt, params=None).contents
                         if logging.getLogger().level == logging.DEBUG:
                             logging.debug('AESKey')
                             print(hexlify(aesKey).decode())
@@ -318,6 +318,15 @@ class GETST:
 
         seq_set(authenticator, 'cname', clientName.components_to_asn1)
 
+        S4UByteArray = struct.pack('<I', constants.PrincipalNameType.NT_PRINCIPAL.value)
+        S4UByteArray += b(str(decodedTGT['cname'])) + b(str(decodedTGT['crealm'])) + b'Kerberos'
+
+        checkSum = _SHA384AES256.checksum(sessionKey, 17, S4UByteArray)
+
+        authenticator['cksum'] = noValue
+        authenticator['cksum']['cksumtype'] = int(constants.ChecksumTypes.hmac_sha384_192_aes256.value)
+        authenticator['cksum']['checksum'] = checkSum
+
         now = datetime.datetime.utcnow()
         authenticator['cusec'] = now.microsecond
         authenticator['ctime'] = KerberosTime.to_asn1(now)
@@ -367,7 +376,7 @@ class GETST:
         # with the following three parameters: the session key of the TGT of
         # the service performing the S4U2Self request, the message type value
         # of 17, and the byte array S4UByteArray.
-        checkSum = _HMACMD5.checksum(sessionKey, 17, S4UByteArray)
+        checkSum = _SHA384AES256.checksum(sessionKey, 17, S4UByteArray)
 
         if logging.getLogger().level == logging.DEBUG:
             logging.debug('CheckSum')
@@ -377,7 +386,7 @@ class GETST:
         seq_set(paForUserEnc, 'userName', clientName.components_to_asn1)
         paForUserEnc['userRealm'] = self.__domain
         paForUserEnc['cksum'] = noValue
-        paForUserEnc['cksum']['cksumtype'] = int(constants.ChecksumTypes.hmac_md5.value)
+        paForUserEnc['cksum']['cksumtype'] = int(constants.ChecksumTypes.hmac_sha384_192_aes256.value)
         paForUserEnc['cksum']['checksum'] = checkSum
         paForUserEnc['auth-package'] = 'Kerberos'
 
@@ -449,7 +458,7 @@ class GETST:
                         print(hexlify(nthash).decode())
                 if not aesKey:
                     salt = self.__domain.upper() + self.__user
-                    aesKey = _AES256CTS.string_to_key(self.__password, salt, params=None).contents
+                    aesKey = _AES256_SHA384_CTS.string_to_key(self.__password, salt, params=None).contents
                     if logging.getLogger().level == logging.DEBUG:
                         logging.debug('AESKey')
                         print(hexlify(aesKey).decode())
@@ -520,6 +529,11 @@ class GETST:
         apReq['ap-options'] = constants.encodeFlags(opts)
         seq_set(apReq, 'ticket', ticketTGT.to_asn1)
 
+        S4UByteArray = struct.pack('<I', constants.PrincipalNameType.NT_PRINCIPAL.value)
+        S4UByteArray += b(str(decodedTGT['cname'])) + b(str(decodedTGT['crealm'])) + b'Kerberos'
+
+        checkSum = _SHA384AES256.checksum(sessionKey, 17, S4UByteArray)
+
         authenticator = Authenticator()
         authenticator['authenticator-vno'] = 5
         authenticator['crealm'] = str(decodedTGT['crealm'])
@@ -528,6 +542,10 @@ class GETST:
         clientName.from_asn1(decodedTGT, 'crealm', 'cname')
 
         seq_set(authenticator, 'cname', clientName.components_to_asn1)
+
+        authenticator['cksum'] = noValue
+        authenticator['cksum']['cksumtype'] = int(constants.ChecksumTypes.hmac_sha384_192_aes256.value)
+        authenticator['cksum']['checksum'] = checkSum
 
         now = datetime.datetime.utcnow()
         authenticator['cusec'] = now.microsecond

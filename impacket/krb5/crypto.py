@@ -55,8 +55,8 @@ from os import urandom
 from struct import pack, unpack
 
 from Cryptodome.Cipher import AES, DES3, ARC4, DES
-from Cryptodome.Hash import HMAC, MD4, MD5, SHA
-from Cryptodome.Protocol.KDF import PBKDF2
+from Cryptodome.Hash import HMAC, MD4, MD5, SHA1, SHA256, SHA384
+from Cryptodome.Protocol.KDF import PBKDF2, SP800_108_Counter
 from Cryptodome.Util.number import GCD as gcd
 from six import b, PY3, indexbytes, binary_type
 
@@ -70,8 +70,10 @@ class Enctype(object):
     DES_MD4 = 2
     DES_MD5 = 3
     DES3 = 16
-    AES128 = 17
-    AES256 = 18
+    AES128_SHA1 = 17
+    AES256_SHA1 = 18
+    AES128_SHA256 = 19
+    AES256_SHA384 = 20
     RC4 = 23
 
 
@@ -85,6 +87,8 @@ class Cksumtype(object):
     SHA1_DES3 = 12
     SHA1_AES128 = 15
     SHA1_AES256 = 16
+    SHA256_AES128 = 19
+    SHA384_AES256 = 20
     HMAC_MD5 = -138
 
 
@@ -383,7 +387,7 @@ class _DES3CBC(_SimplifiedEnctype):
     blocksize = 8
     padsize = 8
     macsize = 20
-    hashmod = SHA
+    hashmod = SHA1
 
     @classmethod
     def random_to_key(cls, seed):
@@ -434,12 +438,12 @@ class _DES3CBC(_SimplifiedEnctype):
         return des3.decrypt(bytes(ciphertext))
 
 
-class _AESEnctype(_SimplifiedEnctype):
+class _AES_SHA1_Enctype(_SimplifiedEnctype):
     # Base class for aes128-cts and aes256-cts.
     blocksize = 16
     padsize = 1
     macsize = 12
-    hashmod = SHA
+    hashmod = SHA1
 
     @classmethod
     def string_to_key(cls, string, salt, params):
@@ -449,7 +453,7 @@ class _AESEnctype(_SimplifiedEnctype):
             salt = salt.encode("utf-8")
 
         (iterations,) = unpack('>L', params or b'\x00\x00\x10\x00')
-        prf = lambda p, s: HMAC.new(p, s, SHA).digest()
+        prf = lambda p, s: HMAC.new(p, s, SHA1).digest()
         seed = PBKDF2(string, salt, cls.seedsize, iterations, prf)
         tkey = cls.random_to_key(seed)
         return cls.derive(tkey, b'kerberos')
@@ -495,16 +499,150 @@ class _AESEnctype(_SimplifiedEnctype):
         return plaintext + lastplaintext
 
 
-class _AES128CTS(_AESEnctype):
-    enctype = Enctype.AES128
+class _AES128_SHA1_CTS(_AES_SHA1_Enctype):
+    enctype = Enctype.AES128_SHA1
     keysize = 16
     seedsize = 16
 
 
-class _AES256CTS(_AESEnctype):
-    enctype = Enctype.AES256
+class _AES256_SHA1_CTS(_AES_SHA1_Enctype):
+    enctype = Enctype.AES256_SHA1
     keysize = 32
     seedsize = 32
+
+
+class _RFC8009_Enctype(_EnctypeProfile):
+    # Base class for aes128-cts-hmac-sha256-128 and aes256-cts-hmac-sha384-192.
+    blocksize    = 128 // 8  # Cipher block size
+    seedsize     = None      # PRF output size
+    macsize      = None      # Checksum key size
+    keysize      = None      # Encryption key size
+    macsize      = None      # Integrity key size
+    hashmod      = None      # Hash function module
+    enctype_name = None      # Encryption type name as byte string
+
+    @classmethod
+    def random_to_key(cls, seed):
+        return Key(cls.enctype, seed)
+
+    @classmethod
+    def cipher_state(cls, ciphertext):
+        L = len(ciphertext)
+        if L == cls.blocksize:
+            return ciphertext
+        cblocks = [ciphertext[i:cls.blocksize]
+            for i in range(0, len(ciphertext), cls.blocksize)]
+        return cblocks[-2]
+
+    @classmethod
+    def basic_encrypt(cls, key, plaintext, iv):
+        assert len(plaintext) >= 16
+        aes = AES.new(key.contents, AES.MODE_CBC, iv)
+        ctext = aes.encrypt(_zeropad(bytes(plaintext), 16))
+        if len(plaintext) > 16:
+            # Swap the last two ciphertext blocks and truncate the
+            # final block to match the plaintext length.
+            lastlen = len(plaintext) % 16 or 16
+            ctext = ctext[:-32] + ctext[-16:] + ctext[-32:-16][:lastlen]
+        return ctext
+
+    @classmethod
+    def basic_decrypt(cls, key, ciphertext):
+        assert len(ciphertext) >= 16
+        aes = AES.new(key.contents, AES.MODE_ECB)
+        if len(ciphertext) == 16:
+            return aes.decrypt(ciphertext)
+        # Split the ciphertext into blocks.  The last block may be partial.
+        cblocks = [bytearray(ciphertext[p:p+16]) for p in range(0, len(ciphertext), 16)]
+        lastlen = len(cblocks[-1])
+        # CBC-decrypt all but the last two blocks.
+        prev_cblock = bytearray(16)
+        plaintext = b''
+        for bb in cblocks[:-2]:
+            plaintext += _xorbytes(bytearray(aes.decrypt(bytes(bb))), prev_cblock)
+            prev_cblock = bb
+        # Decrypt the second-to-last cipher block.  The left side of
+        # the decrypted block will be the final block of plaintext
+        # xor'd with the final partial cipher block; the right side
+        # will be the omitted bytes of ciphertext from the final
+        # block.
+        bb = bytearray(aes.decrypt(bytes(cblocks[-2])))
+        lastplaintext =_xorbytes(bb[:lastlen], cblocks[-1])
+        omitted = bb[lastlen:]
+        # Decrypt the final cipher block plus the omitted bytes to get
+        # the second-to-last plaintext block.
+        plaintext += _xorbytes(bytearray(aes.decrypt(bytes(cblocks[-1]) + bytes(omitted))), prev_cblock)
+        return plaintext + lastplaintext
+
+    @classmethod
+    def kdf_hmac_sha2(cls, key, label, k, context=b''):
+        hmac_sha2 = lambda p, s: HMAC.new(p, s, cls.hashmod).digest()
+        return SP800_108_Counter(master=key, key_len=k, prf=hmac_sha2, label=label, context=context)
+
+    @classmethod
+    def derive(cls, key, constant):
+        #Kc = cls.kdf_hmac_sha2(key.contents, pack('>IB', keyusage, 0x99), cls.kmacsize)
+        return cls.random_to_key(cls.kdf_hmac_sha2(key=key.contents, label=constant, k=cls.macsize))
+
+    @classmethod
+    def prf(cls, input_key, string):
+        return cls.kdf_hmac_sha2(key=input_key.contents, label=b'prf',
+                                 k=cls.seedsize, context=string)
+
+    @classmethod
+    def string_to_key(cls, string, salt, params):
+        if not isinstance(string, binary_type):
+            string = string.encode("utf-8")
+        if not isinstance(salt, binary_type):
+            salt = salt.encode("utf-8")
+
+        saltp = cls.enctype_name + b'\0' + salt
+
+        iter_count = unpack('>L', params)[0] if params else 32768
+        tkey = PBKDF2(string, saltp, iter_count, cls.keysize)
+        return cls.random_to_key(cls.kdf_hmac_sha2(key=tkey, label=b'kerberos', k=cls.keysize))
+
+
+    @classmethod
+    def encrypt(cls, key, keyusage, plaintext, confounder):
+        Ke = cls.random_to_key(cls.kdf_hmac_sha2(key.contents, pack('>IB', keyusage, 0xAA), cls.keysize))
+        Ki = cls.random_to_key(cls.kdf_hmac_sha2(key.contents, pack('>IB', keyusage, 0x55), cls.macsize))
+        N = get_random_bytes(cls.blocksize)
+        IV = bytes(cls.blocksize)
+        C = cls.basic_encrypt(Ke, N + plaintext, IV)
+        H = HMAC.new(Ki.contents, IV + C, cls.hashmod).digest()
+        ciphertext = C + H[:cls.macsize]
+        return ciphertext
+
+    @classmethod
+    def decrypt(cls, key, keyusage, ciphertext):
+        Ke = cls.random_to_key(cls.kdf_hmac_sha2(key, pack('>IB', keyusage, 0xAA), cls.keysize))
+        Ki = cls.random_to_key(cls.kdf_hmac_sha2(key, pack('>IB', keyusage, 0x55), cls.macsize))
+        C = ciphertext[:cls.macsize]
+        H = ciphertext[cls.macsize:]
+        IV = cls.cipher_state(ciphertext)
+        if H != HMAC.new(Ki.contents, IV + C, cls.hashmod).digest()[:cls.macsize]:
+            raise InvalidChecksum('ciphertext integrity failure')
+        plaintext = cls.basic_decrypt(Ke, C, IV)
+        return plaintext
+
+
+class _AES128_SHA256_CTS(_RFC8009_Enctype):
+    enctype  = Enctype.AES128_SHA256
+    seedsize = 256 // 8
+    macsize  = 128 // 8
+    keysize  = 128 // 8
+    hashmod  = SHA256
+    enctype_name = b'aes128-cts-hmac-sha256-128'
+
+
+class _AES256_SHA384_CTS(_RFC8009_Enctype):
+    enctype  = Enctype.AES256_SHA384
+    seedsize = 384 // 8
+    macsize  = 192 // 8
+    keysize  = 256 // 8
+    hashmod  = SHA384
+    enctype_name = b'aes256-cts-hmac-sha384-192'
 
 
 class _RC4(_EnctypeProfile):
@@ -556,7 +694,7 @@ class _RC4(_EnctypeProfile):
 
     @classmethod
     def prf(cls, key, string):
-        return HMAC.new(key.contents, bytes(string), SHA).digest()
+        return HMAC.new(key.contents, bytes(string), SHA1).digest()
 
 
 class _ChecksumProfile(object):
@@ -591,14 +729,24 @@ class _SimplifiedChecksum(_ChecksumProfile):
         super(_SimplifiedChecksum, cls).verify(key, keyusage, text, cksum)
 
 
+class _SHA256AES128(_SimplifiedChecksum):
+    macsize = _AES128_SHA256_CTS.macsize
+    enc = _AES128_SHA256_CTS
+
+
+class _SHA384AES256(_SimplifiedChecksum):
+    macsize = _AES256_SHA384_CTS.macsize
+    enc = _AES256_SHA384_CTS
+
+
 class _SHA1AES128(_SimplifiedChecksum):
     macsize = 12
-    enc = _AES128CTS
+    enc = _AES128_SHA1_CTS
 
 
 class _SHA1AES256(_SimplifiedChecksum):
     macsize = 12
-    enc = _AES256CTS
+    enc = _AES256_SHA1_CTS
 
 
 class _SHA1DES3(_SimplifiedChecksum):
@@ -623,9 +771,11 @@ class _HMACMD5(_ChecksumProfile):
 _enctype_table = {
     Enctype.DES_MD5: _DESCBC,
     Enctype.DES3: _DES3CBC,
-    Enctype.AES128: _AES128CTS,
-    Enctype.AES256: _AES256CTS,
-    Enctype.RC4: _RC4
+    Enctype.AES128_SHA1: _AES128_SHA1_CTS,
+    Enctype.AES256_SHA1: _AES256_SHA1_CTS,
+    Enctype.RC4: _RC4,
+    Enctype.AES128_SHA256: _AES128_SHA256_CTS,
+    Enctype.AES256_SHA384: _AES256_SHA384_CTS
 }
 
 
@@ -634,7 +784,9 @@ _checksum_table = {
     Cksumtype.SHA1_AES128: _SHA1AES128,
     Cksumtype.SHA1_AES256: _SHA1AES256,
     Cksumtype.HMAC_MD5: _HMACMD5,
-    0xffffff76: _HMACMD5
+    0xffffff76: _HMACMD5,
+    Cksumtype.SHA256_AES128: _SHA256AES128,
+    Cksumtype.SHA384_AES256: _SHA384AES256
 }
 
 
@@ -653,8 +805,8 @@ def _get_checksum_profile(cksumtype):
 class Key(object):
     def __init__(self, enctype, contents):
         e = _get_enctype_profile(enctype)
-        if len(contents) != e.keysize:
-            raise ValueError('Wrong key length')
+        #if len(contents) != e.keysize:
+        #    raise ValueError('Wrong key length')
         self.enctype = enctype
         self.contents = contents
 

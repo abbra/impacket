@@ -65,13 +65,13 @@ class CheckSumField(Structure):
 
 def GSSAPI(cipher):
     if cipher.enctype == constants.EncryptionTypes.aes256_cts_hmac_sha1_96.value:
-        return GSSAPI_AES256()
+        return GSSAPI_AES256_SHA1()
     if cipher.enctype == constants.EncryptionTypes.aes128_cts_hmac_sha1_96.value:
-        return GSSAPI_AES128()
+        return GSSAPI_AES128_SHA1()
     if cipher.enctype == constants.EncryptionTypes.aes256_cts_hmac_sha384_192.value:
-        return GSSAPI_AES256()
+        return GSSAPI_AES256_SHA2()
     if cipher.enctype == constants.EncryptionTypes.aes128_cts_hmac_sha256_128.value:
-        return GSSAPI_AES128()
+        return GSSAPI_AES128_SHA2()
     elif cipher.enctype == constants.EncryptionTypes.rc4_hmac.value:
         return GSSAPI_RC4()
     else:
@@ -198,7 +198,7 @@ class GSSAPI_RC4:
     def GSS_Unwrap(self, sessionKey, data, sequenceNumber, direction = 'init', encrypt=True, authData=None):
         return self.GSS_Wrap(sessionKey, data, sequenceNumber, direction, encrypt, authData)
 
-class GSSAPI_AES():
+class GSSAPI_AES_SHA1():
     checkSumProfile = None
     cipherType = None
 
@@ -293,10 +293,22 @@ class GSSAPI_AES():
 
         return plainText[:-(token['EC']+len(self.WRAP()))], None
 
-class GSSAPI_AES256(GSSAPI_AES):
+class GSSAPI_AES256_SHA1(GSSAPI_AES_SHA1):
     checkSumProfile = crypto._SHA1AES256
-    cipherType = crypto._AES256CTS
+    cipherType = crypto._AES256_SHA1_CTS
 
-class GSSAPI_AES128(GSSAPI_AES):
+class GSSAPI_AES128_SHA1(GSSAPI_AES_SHA1):
     checkSumProfile = crypto._SHA1AES128
-    cipherType = crypto._AES128CTS
+    cipherType = crypto._AES128_SHA1_CTS
+
+class GSSAPI_AES_SHA2():
+    checkSumProfile = None
+    cipherType = None
+
+class GSSAPI_AES128_SHA256(GSSAPI_AES_SHA2):
+    checkSumProfile = crypto._SHA256AES128
+    cipherType = crypto._AES128_SHA256_CTS
+
+class GSSAPI_AES256_SHA384(GSSAPI_AES_SHA2):
+    checkSumProfile = crypto._SHA384AES256
+    cipherType = crypto._AES256_SHA384_CTS
