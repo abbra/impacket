@@ -530,33 +530,35 @@ class _RFC8009_Enctype(_EnctypeProfile):
         L = len(ciphertext)
         if L == cls.blocksize:
             return ciphertext
-        cblocks = [ciphertext[i:cls.blocksize]
+        cblocks = [ciphertext[i:i+cls.blocksize]
             for i in range(0, len(ciphertext), cls.blocksize)]
         return cblocks[-2]
 
     @classmethod
     def basic_encrypt(cls, key, plaintext, iv):
-        assert len(plaintext) >= 16
+        bs = cls.blocksize
+        assert len(plaintext) >= bs
         aes = AES.new(key.contents, AES.MODE_CBC, iv)
-        ctext = aes.encrypt(_zeropad(bytes(plaintext), 16))
-        if len(plaintext) > 16:
+        ctext = aes.encrypt(_zeropad(bytes(plaintext), bs))
+        if len(plaintext) > bs:
             # Swap the last two ciphertext blocks and truncate the
             # final block to match the plaintext length.
-            lastlen = len(plaintext) % 16 or 16
-            ctext = ctext[:-32] + ctext[-16:] + ctext[-32:-16][:lastlen]
+            lastlen = len(plaintext) % bs or bs
+            ctext = ctext[:-(bs*2)] + ctext[-bs:] + ctext[-(bs*2):-bs][:lastlen]
         return ctext
 
     @classmethod
-    def basic_decrypt(cls, key, ciphertext):
-        assert len(ciphertext) >= 16
+    def basic_decrypt(cls, key, ciphertext, iv):
+        bs = cls.blocksize
+        assert len(ciphertext) >= bs
         aes = AES.new(key.contents, AES.MODE_ECB)
-        if len(ciphertext) == 16:
+        if len(ciphertext) == bs:
             return aes.decrypt(ciphertext)
         # Split the ciphertext into blocks.  The last block may be partial.
-        cblocks = [bytearray(ciphertext[p:p+16]) for p in range(0, len(ciphertext), 16)]
+        cblocks = [bytearray(ciphertext[p:p+bs]) for p in range(0, len(ciphertext), bs)]
         lastlen = len(cblocks[-1])
         # CBC-decrypt all but the last two blocks.
-        prev_cblock = bytearray(16)
+        prev_cblock = bytearray(iv)
         plaintext = b''
         for bb in cblocks[:-2]:
             plaintext += _xorbytes(bytearray(aes.decrypt(bytes(bb))), prev_cblock)
@@ -599,7 +601,7 @@ class _RFC8009_Enctype(_EnctypeProfile):
         saltp = cls.enctype_name + b'\0' + salt
 
         iter_count = unpack('>L', params)[0] if params else 32768
-        tkey = PBKDF2(string, saltp, iter_count, cls.keysize)
+        tkey = PBKDF2(password=string, salt=saltp, count=iter_count, dkLen=cls.keysize, hmac_hash_module=cls.hashmod)
         return cls.random_to_key(cls.kdf_hmac_sha2(key=tkey, label=b'kerberos', k=cls.keysize))
 
 
@@ -609,21 +611,25 @@ class _RFC8009_Enctype(_EnctypeProfile):
         Ki = cls.random_to_key(cls.kdf_hmac_sha2(key.contents, pack('>IB', keyusage, 0x55), cls.macsize))
         N = get_random_bytes(cls.blocksize)
         IV = bytes(cls.blocksize)
+        #print(" ".join("{:02X}".format(c) for c in IV))
         C = cls.basic_encrypt(Ke, N + plaintext, IV)
         H = HMAC.new(Ki.contents, IV + C, cls.hashmod).digest()
         ciphertext = C + H[:cls.macsize]
+        assert(plaintext == cls.decrypt(key, keyusage, ciphertext))
         return ciphertext
 
     @classmethod
     def decrypt(cls, key, keyusage, ciphertext):
-        Ke = cls.random_to_key(cls.kdf_hmac_sha2(key, pack('>IB', keyusage, 0xAA), cls.keysize))
-        Ki = cls.random_to_key(cls.kdf_hmac_sha2(key, pack('>IB', keyusage, 0x55), cls.macsize))
-        C = ciphertext[:cls.macsize]
-        H = ciphertext[cls.macsize:]
-        IV = cls.cipher_state(ciphertext)
+        Ke = cls.random_to_key(cls.kdf_hmac_sha2(key.contents, pack('>IB', keyusage, 0xAA), cls.keysize))
+        Ki = cls.random_to_key(cls.kdf_hmac_sha2(key.contents, pack('>IB', keyusage, 0x55), cls.macsize))
+        C = ciphertext[:-cls.macsize]
+        H = ciphertext[-cls.macsize:]
+        #IV = cls.cipher_state(ciphertext)
+        #print(" ".join("{:02X}".format(c) for c in IV))
+        IV = bytes(cls.blocksize)
         if H != HMAC.new(Ki.contents, IV + C, cls.hashmod).digest()[:cls.macsize]:
             raise InvalidChecksum('ciphertext integrity failure')
-        plaintext = cls.basic_decrypt(Ke, C, IV)
+        plaintext = cls.basic_decrypt(Ke, C, IV)[cls.blocksize:]
         return plaintext
 
 
