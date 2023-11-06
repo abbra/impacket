@@ -54,7 +54,7 @@ from impacket import version
 from impacket.examples import logger
 from impacket.examples.utils import parse_credentials
 from impacket.krb5 import constants
-from impacket.krb5.asn1 import AP_REQ, AS_REP, TGS_REQ, Authenticator, TGS_REP, seq_set, seq_set_iter, PA_FOR_USER_ENC, \
+from impacket.krb5.asn1 import AP_REQ, AS_REP, TGS_REQ, Authenticator, TGS_REP, seq_set, seq_set_iter, PA_S4U_X509_USER, S4UUserID, \
     Ticket as TicketAsn1, EncTGSRepPart, PA_PAC_OPTIONS, EncTicketPart
 from impacket.krb5.ccache import CCache
 from impacket.krb5.crypto import Key, _enctype_table, _SHA384AES256, _AES256_SHA384_CTS, Enctype
@@ -266,10 +266,7 @@ class GETST:
             reqBody['nonce'] = random.getrandbits(31)
             seq_set_iter(reqBody, 'etype',
                          (
-                             int(constants.EncryptionTypes.rc4_hmac.value),
-                             int(constants.EncryptionTypes.des3_cbc_sha1_kd.value),
-                             int(constants.EncryptionTypes.des_cbc_md5.value),
-                             int(cipher.enctype)
+                             int(cipher.enctype),
                          )
                          )
             message = encoder.encode(tgsReq)
@@ -301,6 +298,15 @@ class GETST:
         ticket = Ticket()
         ticket.from_asn1(decodedTGT['ticket'])
 
+        nonce = random.getrandbits(31)
+
+        tgsReq = TGS_REQ()
+
+        tgsReq['pvno'] = 5
+        tgsReq['msg-type'] = int(constants.ApplicationTagNumbers.TGS_REQ.value)
+
+        tgsReq['padata'] = noValue
+
         apReq = AP_REQ()
         apReq['pvno'] = 5
         apReq['msg-type'] = int(constants.ApplicationTagNumbers.AP_REQ.value)
@@ -308,6 +314,27 @@ class GETST:
         opts = list()
         apReq['ap-options'] = constants.encodeFlags(opts)
         seq_set(apReq, 'ticket', ticket.to_asn1)
+
+        reqBody = seq_set(tgsReq, 'req-body')
+
+        opts = list()
+        opts.append(constants.KDCOptions.forwardable.value)
+        opts.append(constants.KDCOptions.renewable.value)
+        opts.append(constants.KDCOptions.canonicalize.value)
+
+        reqBody['kdc-options'] = constants.encodeFlags(opts)
+
+        serverName = Principal(self.__user, type=constants.PrincipalNameType.NT_UNKNOWN.value)
+
+        seq_set(reqBody, 'sname', serverName.components_to_asn1)
+        reqBody['realm'] = str(decodedTGT['crealm'])
+
+        now = datetime.datetime.utcnow() + datetime.timedelta(days=1)
+
+        reqBody['till'] = KerberosTime.to_asn1(now)
+        reqBody['nonce'] = nonce
+        seq_set_iter(reqBody, 'etype',
+                     (int(cipher.enctype),))
 
         authenticator = Authenticator()
         authenticator['authenticator-vno'] = 5
@@ -318,14 +345,11 @@ class GETST:
 
         seq_set(authenticator, 'cname', clientName.components_to_asn1)
 
-        S4UByteArray = struct.pack('<I', constants.PrincipalNameType.NT_PRINCIPAL.value)
-        S4UByteArray += b(str(decodedTGT['cname'])) + b(str(decodedTGT['crealm'])) + b'Kerberos'
-
-        checkSum = _SHA384AES256.checksum(sessionKey, 17, S4UByteArray)
+        reqBodyEncCksum = _SHA384AES256.checksum(sessionKey, 6, encoder.encode(reqBody))
 
         authenticator['cksum'] = noValue
         authenticator['cksum']['cksumtype'] = int(constants.ChecksumTypes.hmac_sha384_192_aes256.value)
-        authenticator['cksum']['checksum'] = checkSum
+        authenticator['cksum']['checksum'] = reqBodyEncCksum
 
         now = datetime.datetime.utcnow()
         authenticator['cusec'] = now.microsecond
@@ -350,12 +374,6 @@ class GETST:
 
         encodedApReq = encoder.encode(apReq)
 
-        tgsReq = TGS_REQ()
-
-        tgsReq['pvno'] = 5
-        tgsReq['msg-type'] = int(constants.ApplicationTagNumbers.TGS_REQ.value)
-
-        tgsReq['padata'] = noValue
         tgsReq['padata'][0] = noValue
         tgsReq['padata'][0]['padata-type'] = int(constants.PreAuthenticationDataTypes.PA_TGS_REQ.value)
         tgsReq['padata'][0]['padata-value'] = encodedApReq
@@ -365,61 +383,39 @@ class GETST:
         # identified to the KDC by the user's name and realm.
         clientName = Principal(self.__options.impersonate, type=constants.PrincipalNameType.NT_PRINCIPAL.value)
 
-        S4UByteArray = struct.pack('<I', constants.PrincipalNameType.NT_PRINCIPAL.value)
-        S4UByteArray += b(self.__options.impersonate) + b(self.__domain) + b'Kerberos'
+        s4uUserId = S4UUserID()
+        s4uUserId['nonce'] = nonce
+        seq_set(s4uUserId, 'cname', clientName.components_to_asn1)
+        s4uUserId['crealm'] = self.__domain
+
+        s4uUserIdEnc = encoder.encode(s4uUserId)
+        s4uUserIdEncCksum = _SHA384AES256.checksum(sessionKey, 26, s4uUserIdEnc)
 
         if logging.getLogger().level == logging.DEBUG:
-            logging.debug('S4UByteArray')
-            hexdump(S4UByteArray)
+            logging.debug('PA-S4U-X509-USER user-id')
+            print(s4uUserId.prettyPrint())
+            logging.debug('PA-S4U-X509-USER user-id (hexdump)')
+            hexdump(s4uUserIdEnc)
+            logging.debug('PA-S4U-X509-USER checksum')
+            hexdump(s4uUserIdEncCksum)
 
-        # Finally cksum is computed by calling the KERB_CHECKSUM_HMAC_MD5 hash
-        # with the following three parameters: the session key of the TGT of
-        # the service performing the S4U2Self request, the message type value
-        # of 17, and the byte array S4UByteArray.
-        checkSum = _SHA384AES256.checksum(sessionKey, 17, S4UByteArray)
-
-        if logging.getLogger().level == logging.DEBUG:
-            logging.debug('CheckSum')
-            hexdump(checkSum)
-
-        paForUserEnc = PA_FOR_USER_ENC()
-        seq_set(paForUserEnc, 'userName', clientName.components_to_asn1)
-        paForUserEnc['userRealm'] = self.__domain
-        paForUserEnc['cksum'] = noValue
-        paForUserEnc['cksum']['cksumtype'] = int(constants.ChecksumTypes.hmac_sha384_192_aes256.value)
-        paForUserEnc['cksum']['checksum'] = checkSum
-        paForUserEnc['auth-package'] = 'Kerberos'
+        paS4uX509User = PA_S4U_X509_USER()
+        #paS4uX509User.setComponentByName('user-id', s4uUserId)
+        paS4uX509User['user-id'] = noValue
+        paS4uX509User['user-id']['nonce'] = nonce
+        seq_set(paS4uX509User['user-id'], 'cname', clientName.components_to_asn1)
+        paS4uX509User['user-id']['crealm'] = self.__domain
+        paS4uX509User['checksum'] = noValue
+        paS4uX509User['checksum']['cksumtype'] = int(constants.ChecksumTypes.hmac_sha384_192_aes256.value)
+        paS4uX509User['checksum']['checksum'] = s4uUserIdEncCksum
 
         if logging.getLogger().level == logging.DEBUG:
-            logging.debug('PA_FOR_USER_ENC')
-            print(paForUserEnc.prettyPrint())
-
-        encodedPaForUserEnc = encoder.encode(paForUserEnc)
+            logging.debug('PA-S4U-X509-USER')
+            print(paS4uX509User.prettyPrint())
 
         tgsReq['padata'][1] = noValue
-        tgsReq['padata'][1]['padata-type'] = int(constants.PreAuthenticationDataTypes.PA_FOR_USER.value)
-        tgsReq['padata'][1]['padata-value'] = encodedPaForUserEnc
-
-        reqBody = seq_set(tgsReq, 'req-body')
-
-        opts = list()
-        opts.append(constants.KDCOptions.forwardable.value)
-        opts.append(constants.KDCOptions.renewable.value)
-        opts.append(constants.KDCOptions.canonicalize.value)
-
-        reqBody['kdc-options'] = constants.encodeFlags(opts)
-
-        serverName = Principal(self.__user, type=constants.PrincipalNameType.NT_UNKNOWN.value)
-
-        seq_set(reqBody, 'sname', serverName.components_to_asn1)
-        reqBody['realm'] = str(decodedTGT['crealm'])
-
-        now = datetime.datetime.utcnow() + datetime.timedelta(days=1)
-
-        reqBody['till'] = KerberosTime.to_asn1(now)
-        reqBody['nonce'] = random.getrandbits(31)
-        seq_set_iter(reqBody, 'etype',
-                     (int(cipher.enctype), int(constants.EncryptionTypes.rc4_hmac.value)))
+        tgsReq['padata'][1]['padata-type'] = int(constants.PreAuthenticationDataTypes.PA_S4U_X509_USER.value)
+        tgsReq['padata'][1]['padata-value'] = encoder.encode(paS4uX509User)
 
         if logging.getLogger().level == logging.DEBUG:
             logging.debug('Final TGS')
@@ -529,11 +525,6 @@ class GETST:
         apReq['ap-options'] = constants.encodeFlags(opts)
         seq_set(apReq, 'ticket', ticketTGT.to_asn1)
 
-        S4UByteArray = struct.pack('<I', constants.PrincipalNameType.NT_PRINCIPAL.value)
-        S4UByteArray += b(str(decodedTGT['cname'])) + b(str(decodedTGT['crealm'])) + b'Kerberos'
-
-        checkSum = _SHA384AES256.checksum(sessionKey, 17, S4UByteArray)
-
         authenticator = Authenticator()
         authenticator['authenticator-vno'] = 5
         authenticator['crealm'] = str(decodedTGT['crealm'])
@@ -542,10 +533,6 @@ class GETST:
         clientName.from_asn1(decodedTGT, 'crealm', 'cname')
 
         seq_set(authenticator, 'cname', clientName.components_to_asn1)
-
-        authenticator['cksum'] = noValue
-        authenticator['cksum']['cksumtype'] = int(constants.ChecksumTypes.hmac_sha384_192_aes256.value)
-        authenticator['cksum']['checksum'] = checkSum
 
         now = datetime.datetime.utcnow()
         authenticator['cusec'] = now.microsecond
@@ -605,12 +592,10 @@ class GETST:
         reqBody['nonce'] = random.getrandbits(31)
         seq_set_iter(reqBody, 'etype',
                      (
-                         int(constants.EncryptionTypes.rc4_hmac.value),
-                         int(constants.EncryptionTypes.des3_cbc_sha1_kd.value),
-                         int(constants.EncryptionTypes.des_cbc_md5.value),
-                         int(cipher.enctype)
+                         int(cipher.enctype),
                      )
                      )
+
         message = encoder.encode(tgsReq)
 
         logging.info('\tRequesting S4U2Proxy')
