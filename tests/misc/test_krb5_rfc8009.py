@@ -1,10 +1,11 @@
-from impacket.krb5.crypto import _AES256_SHA384_CTS
+from impacket.krb5.crypto import _AES256_SHA384_CTS, _SHA384AES256
 from Cryptodome.Hash import HMAC
 from struct import pack
 import unittest
 
 class Aes256HmacSha384Tests(unittest.TestCase):
     etype = _AES256_SHA384_CTS
+    digest = _SHA384AES256
 
     def test_encrypt_empty_plaintext(self):
         plaintext = b''
@@ -123,6 +124,12 @@ class Aes256HmacSha384Tests(unittest.TestCase):
         self.assertEqual(exp_ki, Ki.contents)
         self.assertEqual(exp_kc, Kc.contents)
 
+    def test_checksum(self):
+        Kc = bytes.fromhex('EF 57 18 BE 86 CC 84 96 3D 8B BB 50 31 E9 F5 C4 BA 41 F2 8F AF 69 E7 3D')
+        plaintext = bytes.fromhex('00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10 11 12 13 14')
+        exp_checksum = bytes.fromhex('45 EE 79 15 67 EE FC A3 7F 4A C1 E0 22 2D E8 0D 43 C3 BF A0 66 99 67 2A')
+        checksum = HMAC.new(Kc, plaintext, self.digest.enc.hashmod).digest()[:self.digest.enc.macsize]
+        self.assertEqual(checksum, exp_checksum)
 
 if __name__ == '__main__':
     unittest.main(verbosity=1)

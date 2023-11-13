@@ -511,7 +511,6 @@ class S4UUserID(univ.Sequence):
         _sequence_optional_component('options', 4, univ.BitString()))
 
 class PA_S4U_X509_USER(univ.Sequence):
-    tagSet = _application_tag(constants.PreAuthenticationDataTypes.PA_S4U_X509_USER.value)
     componentType = namedtype.NamedTypes(
         _sequence_component('user-id', 0, S4UUserID()),
         _sequence_component('checksum', 1, Checksum()))

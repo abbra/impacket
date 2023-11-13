@@ -345,7 +345,16 @@ class GETST:
 
         seq_set(authenticator, 'cname', clientName.components_to_asn1)
 
-        reqBodyEncCksum = _SHA384AES256.checksum(sessionKey, 6, encoder.encode(reqBody))
+        reqBodyEnc = encoder.encode(reqBody)[2:]
+        reqBodyEncCksum = _SHA384AES256.checksum(sessionKey, 6, reqBodyEnc)
+
+        if logging.getLogger().level == logging.DEBUG:
+            logging.debug('KDC-REQ-BODY')
+            print(reqBody.prettyPrint())
+            logging.debug('KDC-REQ-BODY (hexdump)')
+            hexdump(reqBodyEnc)
+            logging.debug('KDC-REQ-BODY checksum')
+            hexdump(reqBodyEncCksum)
 
         authenticator['cksum'] = noValue
         authenticator['cksum']['cksumtype'] = int(constants.ChecksumTypes.hmac_sha384_192_aes256.value)
@@ -412,6 +421,8 @@ class GETST:
         if logging.getLogger().level == logging.DEBUG:
             logging.debug('PA-S4U-X509-USER')
             print(paS4uX509User.prettyPrint())
+            logging.debug('PA-S4U-X509-USER (hexdump)')
+            hexdump(encoder.encode(paS4uX509User))
 
         tgsReq['padata'][1] = noValue
         tgsReq['padata'][1]['padata-type'] = int(constants.PreAuthenticationDataTypes.PA_S4U_X509_USER.value)
@@ -475,7 +486,7 @@ class GETST:
             # AS-REP Ticket and TGS-REP Ticket (includes tgs session key or
             #  application session key), encrypted with the service key
             #  (section 5.4.2)
-            plainText = newCipher.decrypt(key, 2, cipherText)
+            plainText = newCipher.decrypt(key, 2, bytes(cipherText))
             encTicketPart = decoder.decode(plainText, asn1Spec=EncTicketPart())[0]
 
             # Print the flags in the ticket before modification
