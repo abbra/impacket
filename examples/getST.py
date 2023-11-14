@@ -349,10 +349,10 @@ class GETST:
         reqBodyEncCksum = _SHA384AES256.checksum(sessionKey, 6, reqBodyEnc)
 
         if logging.getLogger().level == logging.DEBUG:
-            logging.debug('KDC-REQ-BODY')
-            print(reqBody.prettyPrint())
-            logging.debug('KDC-REQ-BODY (hexdump)')
-            hexdump(reqBodyEnc)
+            #logging.debug('KDC-REQ-BODY')
+            #print(reqBody.prettyPrint())
+            #logging.debug('KDC-REQ-BODY (hexdump)')
+            #hexdump(reqBodyEnc)
             logging.debug('KDC-REQ-BODY checksum')
             hexdump(reqBodyEncCksum)
 
@@ -486,7 +486,7 @@ class GETST:
             # AS-REP Ticket and TGS-REP Ticket (includes tgs session key or
             #  application session key), encrypted with the service key
             #  (section 5.4.2)
-            plainText = newCipher.decrypt(key, 2, bytes(cipherText))
+            plainText = newCipher.decrypt(key, 2, cipherText)
             encTicketPart = decoder.decode(plainText, asn1Spec=EncTicketPart())[0]
 
             # Print the flags in the ticket before modification
@@ -549,36 +549,7 @@ class GETST:
         authenticator['cusec'] = now.microsecond
         authenticator['ctime'] = KerberosTime.to_asn1(now)
 
-        encodedAuthenticator = encoder.encode(authenticator)
-
-        # Key Usage 7
-        # TGS-REQ PA-TGS-REQ padata AP-REQ Authenticator (includes
-        # TGS authenticator subkey), encrypted with the TGS session
-        # key (Section 5.5.1)
-        encryptedEncodedAuthenticator = cipher.encrypt(sessionKey, 7, encodedAuthenticator, None)
-
-        apReq['authenticator'] = noValue
-        apReq['authenticator']['etype'] = cipher.enctype
-        apReq['authenticator']['cipher'] = encryptedEncodedAuthenticator
-
-        encodedApReq = encoder.encode(apReq)
-
         tgsReq = TGS_REQ()
-
-        tgsReq['pvno'] = 5
-        tgsReq['msg-type'] = int(constants.ApplicationTagNumbers.TGS_REQ.value)
-        tgsReq['padata'] = noValue
-        tgsReq['padata'][0] = noValue
-        tgsReq['padata'][0]['padata-type'] = int(constants.PreAuthenticationDataTypes.PA_TGS_REQ.value)
-        tgsReq['padata'][0]['padata-value'] = encodedApReq
-
-        # Add resource-based constrained delegation support
-        paPacOptions = PA_PAC_OPTIONS()
-        paPacOptions['flags'] = constants.encodeFlags((constants.PAPacOptions.resource_based_constrained_delegation.value,))
-
-        tgsReq['padata'][1] = noValue
-        tgsReq['padata'][1]['padata-type'] = constants.PreAuthenticationDataTypes.PA_PAC_OPTIONS.value
-        tgsReq['padata'][1]['padata-value'] = encoder.encode(paPacOptions)
 
         reqBody = seq_set(tgsReq, 'req-body')
 
@@ -601,11 +572,51 @@ class GETST:
 
         reqBody['till'] = KerberosTime.to_asn1(now)
         reqBody['nonce'] = random.getrandbits(31)
-        seq_set_iter(reqBody, 'etype',
-                     (
-                         int(cipher.enctype),
-                     )
-                     )
+        seq_set_iter(reqBody, 'etype', (int(cipher.enctype), ))
+
+        reqBodyEnc = encoder.encode(reqBody)[4:]
+        reqBodyEncCksum = _SHA384AES256.checksum(sessionKey, 6, reqBodyEnc)
+
+        if logging.getLogger().level == logging.DEBUG:
+            #logging.debug('KDC-REQ-BODY')
+            #print(reqBody.prettyPrint())
+            #logging.debug('KDC-REQ-BODY (hexdump)')
+            #hexdump(reqBodyEnc)
+            logging.debug('KDC-REQ-BODY checksum')
+            hexdump(reqBodyEncCksum)
+
+        authenticator['cksum'] = noValue
+        authenticator['cksum']['cksumtype'] = int(constants.ChecksumTypes.hmac_sha384_192_aes256.value)
+        authenticator['cksum']['checksum'] = reqBodyEncCksum
+
+        encodedAuthenticator = encoder.encode(authenticator)
+
+        # Key Usage 7
+        # TGS-REQ PA-TGS-REQ padata AP-REQ Authenticator (includes
+        # TGS authenticator subkey), encrypted with the TGS session
+        # key (Section 5.5.1)
+        encryptedEncodedAuthenticator = cipher.encrypt(sessionKey, 7, encodedAuthenticator, None)
+
+        apReq['authenticator'] = noValue
+        apReq['authenticator']['etype'] = cipher.enctype
+        apReq['authenticator']['cipher'] = encryptedEncodedAuthenticator
+
+        encodedApReq = encoder.encode(apReq)
+
+        tgsReq['pvno'] = 5
+        tgsReq['msg-type'] = int(constants.ApplicationTagNumbers.TGS_REQ.value)
+        tgsReq['padata'] = noValue
+        tgsReq['padata'][0] = noValue
+        tgsReq['padata'][0]['padata-type'] = int(constants.PreAuthenticationDataTypes.PA_TGS_REQ.value)
+        tgsReq['padata'][0]['padata-value'] = encodedApReq
+
+        # Add resource-based constrained delegation support
+        paPacOptions = PA_PAC_OPTIONS()
+        paPacOptions['flags'] = constants.encodeFlags((constants.PAPacOptions.resource_based_constrained_delegation.value,))
+
+        tgsReq['padata'][1] = noValue
+        tgsReq['padata'][1]['padata-type'] = constants.PreAuthenticationDataTypes.PA_PAC_OPTIONS.value
+        tgsReq['padata'][1]['padata-value'] = encoder.encode(paPacOptions)
 
         message = encoder.encode(tgsReq)
 

@@ -620,6 +620,8 @@ class _RFC8009_Enctype(_EnctypeProfile):
 
     @classmethod
     def decrypt(cls, key, keyusage, ciphertext):
+        if not isinstance(ciphertext, binary_type):
+            ciphertext = bytes(ciphertext)
         Ke = cls.random_to_key(cls.kdf_hmac_sha2(key.contents, pack('>IB', keyusage, 0xAA), cls.keysize))
         Ki = cls.random_to_key(cls.kdf_hmac_sha2(key.contents, pack('>IB', keyusage, 0x55), cls.macsize))
         C = ciphertext[:-cls.macsize]
